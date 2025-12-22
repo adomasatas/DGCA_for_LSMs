@@ -37,12 +37,14 @@ class TaskFitness(ReservoirFitness):
                  order: int = None,
                  measurements: int = 5,
                  fixed_series: bool = True,
+                 reservoir_factory=None,
                  **kwargs):
         super().__init__(high_good=False, **kwargs)  # NRMSE: lower is better
         self.series = series
         self.order = order
         self.measurements = measurements
         self.fixed_series = fixed_series
+        self.reservoir_factory = reservoir_factory
         self.input, self.target = self.series(order=self.order)
 
     def _generate_series(self):
@@ -56,9 +58,12 @@ class TaskFitness(ReservoirFitness):
         errors = []
         for _ in range(self.measurements):
             self.input, self.target = self._generate_series()
-            res_.reset()
-            predictions = res_.bipolar().train(self.input, target=self.target)
-            err = np.nan if predictions is None else min(NRMSE(self.target[:, res.washout:], predictions), 1)
+
+            eval_res = self.reservoir_factory(res_) if self.reservoir_factory else res_
+            eval_res.reset()
+            predictions = eval_res.bipolar().train(self.input, target=self.target)
+            err = np.nan if predictions is None else min(NRMSE(self.target[:, eval_res.washout:], predictions), 1)
+
             errors.append(err)
 
         valid_errors = [e for e in errors if not np.isnan(e)]

@@ -125,32 +125,16 @@ class DGCA(object):
             + np.kron(self.Q_N, (np.diag(k_ni) @ I + np.diag(k_na) @ A + np.diag(k_nt) @ A.T))
         
         
-        ######################
-        # print("N =", res.size())
-        # print("remove count:", int(remove.sum()))
-        # print("divide count:", int(divide.sum()))
-
-        # print("F none/counts:", int(none_f.sum()), int(k_fi.sum()), int(k_fa.sum()), int(k_ft.sum()))
-        # print("B none/counts:", int(none_b.sum()), int(k_bi.sum()), int(k_ba.sum()), int(k_bt.sum()))
-        # print("N none/counts:", int(none_n.sum()), int(k_ni.sum()), int(k_na.sum()), int(k_nt.sum()))       
-        ########################
-
-        # After building A_new, before keep:########
-        # print("A_new pre-keep shape:", A_new.shape, "edges:", int(A_new.sum()))
-
         # keep only the nodes we need
         A_new = A_new[keep,:][:,keep]
-
-         # After applying keep:###########
-        # print("keep total:", int(keep.sum()))
 
         # duplicate relevant cols of state matrix
         S_new = np.vstack((S, S))
         S_new = S_new[keep,:]
 
 
-        # print("A_new post-keep shape:", A_new.shape, "edges:", int(A_new.sum()))########################
-        return Reservoir(A_new, S_new, res.input_nodes, res.output_nodes).no_islands()
+        # return Reservoir(A_new, S_new, res.input_nodes, res.output_nodes).no_islands()
+        return res.__class__(A_new, S_new, res.input_nodes, res.output_nodes).no_islands()
        
     def update_state(self, res: Reservoir):
         """
@@ -158,7 +142,8 @@ class DGCA(object):
         """
         G = res.get_neighbourhood()
         D = self.state_mlp.forward(G)  # N x S
-        return Reservoir(res.A, onehot(D), res.input_nodes, res.output_nodes)
+        # return Reservoir(res.A, onehot(D), res.input_nodes, res.output_nodes)
+        return res.__class__(res.A, onehot(D), res.input_nodes, res.output_nodes)
 
     def step(self, res: Reservoir):
         """

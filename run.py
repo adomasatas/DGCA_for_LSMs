@@ -5,7 +5,7 @@ from grow.reservoir import get_seed
 from evolve.fitness import TaskFitness, MetricFitness
 from evolve.mga import ChromosomalMGA, EvolvableDGCA
 from measure.tasks import narmax, santa_fe
-
+from grow.reservoir import SpikingReservoir
 
 def run_ga(run_id, args):
     """
@@ -18,18 +18,23 @@ def run_ga(run_id, args):
                 #   "io_path": True
                   }
 
+
     if args.task:
         fitness_fn = TaskFitness(series=narmax if args.task == "narma" else santa_fe,
-                                 conditions=conditions, 
-                                 verbose=False,
-                                 order=args.order,
-                                 fixed_series=True)
+                         conditions=conditions, 
+                         verbose=False,
+                         order=args.order,
+                         fixed_series=True)
     elif args.metric:
         fitness_fn = MetricFitness(metric=args.metric,
                                    conditions=conditions, 
                                    verbose=False)
 
     reservoir = get_seed(args.input_nodes, args.output_nodes, args.n_states)
+
+    if getattr(args, "reservoir_type", "esn") == "lsm":
+        reservoir = SpikingReservoir.from_reservoir(reservoir)
+
     model = EvolvableDGCA(n_states=reservoir.n_states, hidden_size=64)
     runner = Runner(max_steps=100, max_size=300)
 
@@ -60,6 +65,7 @@ if __name__ == "__main__":
         "cross_rate": 0.5,
         "cross_style": "cols",
         "n_trials": 1000,
+        "reservoir_type": "esn",   # or "lsm" 
         "input_nodes": 0,
         "output_nodes": 0,
         "order": None,

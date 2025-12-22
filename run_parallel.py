@@ -5,7 +5,7 @@ from run import run_ga
 
 if __name__ == "__main__":
 
-    total_runs = 10
+    total_runs = 1
 
     args_dict = {
         "pop_size": 10,
@@ -13,7 +13,8 @@ if __name__ == "__main__":
         "cross_rate": 0.5,
         "cross_style": "cols",
         # "n_trials": 1000,
-        "n_trials": 400,
+        "n_trials": 40,
+        "reservoir_type": "lsm",   # or "lsm" 
         "input_nodes": 0,
         "output_nodes": 0,
         "order": 10,
@@ -21,7 +22,7 @@ if __name__ == "__main__":
         "metric": None,
         "task": "narma", 
         "n_states": 3,
-        "output_file": "fitness_local.db",
+        "output_file": "fitness_local_2.db",
         "num_jobs": total_runs,
         "heavy_log": False
     }

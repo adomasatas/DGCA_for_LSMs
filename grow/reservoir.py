@@ -83,7 +83,8 @@ def dfs_directed(A: np.ndarray, current: int, visited: set) -> bool:
 
 def get_seed(input_nodes: int, 
              output_nodes: int, 
-             n_states: int) -> 'Reservoir':
+             n_states: int, 
+             ) -> 'Reservoir':
     
     if input_nodes or output_nodes:
         n_nodes = input_nodes + output_nodes + 1
@@ -238,13 +239,15 @@ class Reservoir(GraphDef):
         states_from = node_states[rows]
         states_to = node_states[cols]
         if len(states_to) == 0 or len(states_from) == 0:
-            return Reservoir(self.A, self.S, self.input_nodes, self.output_nodes)
+            # return Reservoir(self.A, self.S, self.input_nodes, self.output_nodes)
+            return self.__class__(self.A, self.S, self.input_nodes, self.output_nodes)
         # vectorize to weights
         new_weights = POLARITY_MATRIX[states_from, states_to]
 
         A_new = np.zeros_like(self.A)
         A_new[rows, cols] = new_weights  
-        return Reservoir(A_new, self.S, self.input_nodes, self.output_nodes)
+        # return Reservoir(A_new, self.S, self.input_nodes, self.output_nodes)
+        return self.__class__(A_new, self.S, self.input_nodes, self.output_nodes)
     
     def no_islands(self) -> 'Reservoir':
         """
@@ -275,7 +278,8 @@ class Reservoir(GraphDef):
     
         final_A = self.A[reachable_mask][:, reachable_mask]
         final_S = self.S[reachable_mask]
-        return Reservoir(final_A, final_S, self.input_nodes, self.output_nodes)
+        # return Reservoir(final_A, final_S, self.input_nodes, self.output_nodes)
+        return self.__class__(final_A, final_S, self.input_nodes, self.output_nodes)
 
     def train(self, input: np.ndarray, target: np.ndarray):
         """
@@ -379,9 +383,330 @@ class Reservoir(GraphDef):
         out_A = self.A.copy()
         # set values on the diagonal to zero
         out_A[np.eye(out_A.shape[0], dtype=np.bool_)] = 0 
-        return Reservoir(out_A, np.copy(self.S), self.input_nodes, self.output_nodes)
+        # return Reservoir(out_A, np.copy(self.S), self.input_nodes, self.output_nodes)
+        return self.__class__(out_A, np.copy(self.S), self.input_nodes, self.output_nodes)
     
     def copy(self):
-        return Reservoir(np.copy(self.A), np.copy(self.S), self.input_nodes, self.output_nodes)
+        # return Reservoir(np.copy(self.A), np.copy(self.S), self.input_nodes, self.output_nodes)
+        return self.__class__(np.copy(self.A), np.copy(self.S), self.input_nodes, self.output_nodes)
 
+
+
+
+
+
+
+class SpikingReservoir(Reservoir):
+    def __init__(self,
+                 A: np.ndarray,
+                 S: np.ndarray,
+                 input_nodes: int = 0,
+                 output_nodes: int = 0,
+                 input_units: int = 1,
+                 output_units: int = 1,
+                 washout: int = 20,
+                 seed: int | None = None):
+        
+        # NOTE: copy()/bipolar()/no_islands() rely on default hyperparams.
+        # Safe while hyperparams are fixed during MGA.
+        # If hyperparams become configurable, override these methods.
+
+        # IMPORTANT: bypass Reservoir.__init__ (it calls self.reset())
+        GraphDef.__init__(self, A, S)
+
+        # "Reservoir-like" metadata used throughout the repo
+        self.input_nodes = input_nodes
+        self.output_nodes = output_nodes
+        self.input_units = input_units
+        self.output_units = output_units
+        self.input_gain = 0.0        # unused in LSM
+        self.feedback_gain = 0.0     # unused in LSM
+        self.washout = washout
+
+        # Spiking hyperparams
+        self.dt_ms = 1.0
+        self.tau_m_ms = 22.0
+        self.tau_syn_ms = 18.0
+        self.tau_read_ms = 1.2
+        self.threshold = 0.5
+        self.refractory_ms = 2.0
+        self.p_input = 0.6
+        self.gain = 32.0
+
+        self.base_delay_ms = 4.0
+        self.rand_delay_ms = 2.0
+
+        self.seed = seed
+
+        # Brian2 objects / caches
+        self._net = None
+        self._G = None
+        self._S = None
+        self._R = None
+        self._S_read = None
+        self._readmon = None
+        self._I_ta = None
+        self._input_mask_idx = None
+
+    def reset(self, state_dim: int = 2000):
+        import brian2 as b2
+
+        N = self.size()
+        state_dim = int(state_dim)
+        self._state_dim = state_dim
+
+        # Keep pipeline-compatible buffers
+        self.reservoir_state = np.zeros((N, state_dim), dtype=np.float64)
+        self.w_out = np.zeros((self.output_units,
+                                self.output_nodes if self.output_nodes else N),
+                            dtype=np.float64)
+
+        # Nothing to build if empty
+        if N == 0:
+            self._net = None
+            self._G = self._S = self._R = self._S_read = self._readmon = None
+            self._I_ta = None
+            self._input_mask_idx = np.array([], dtype=int)
+            self._built_sig = None
+            return
+
+        # --- decide whether we must rebuild ---
+        # Signature should change if anything structural changes.
+        # Hash A cheaply by its bytes (OK for your sizes; can optimize later).
+        A = np.asarray(self.A)
+        A_sig = hash(A.tobytes())
+
+        dt = float(self.dt_ms)  # in ms
+        new_sig = (N, A_sig, state_dim, dt)
+
+        needs_build = (getattr(self, "_net", None) is None) or (getattr(self, "_built_sig", None) != new_sig)
+
+        if needs_build:
+            # Reproducibility (optional)
+            if getattr(self, "seed", None) is not None:
+                np.random.seed(self.seed)
+                b2.seed(self.seed)
+
+            # Build from scratch
+            # b2.start_scope()
+            b2.defaultclock.dt = dt * b2.ms
+            self._dt = b2.defaultclock.dt
+
+            self._I_ta = b2.TimedArray(np.zeros(state_dim, dtype=np.float64), dt=self._dt)
+
+            
+            eqs = f'''
+            dv/dt = (I + m*I_ext - v)/({float(self.tau_m_ms)}*ms) : 1
+            dI/dt = -I/({float(self.tau_syn_ms)}*ms) : 1
+            I_ext = I_ta(t) : 1
+            m : 1
+            '''
+
+            self._G = b2.NeuronGroup(
+                N, eqs,
+                threshold=f'v>{float(self.threshold)}',
+                reset='v=0',
+                refractory=float(self.refractory_ms) * b2.ms,
+                method='exact',
+                namespace={'I_ta': self._I_ta}
+            )
+
+            # Input mask
+            k = int(np.round(float(self.p_input) * N))
+            k = max(0, min(N, k))
+            inp_idx = np.random.choice(N, k, replace=False) if k > 0 else np.array([], dtype=int)
+            signs = np.random.choice([-1.0, 1.0], size=len(inp_idx)) if len(inp_idx) else np.array([], dtype=float)
+            self._G.m = 0.0
+            if len(inp_idx):
+                self._G.m[inp_idx] = signs
+            self._input_mask_idx = inp_idx
+
+            # Recurrent synapses from A (including self-loops if present)
+            src, tgt = np.nonzero(A)
+
+            self._S = b2.Synapses(self._G, self._G, 'w : 1', on_pre='I_post += w')
+            if len(src):
+                self._S.connect(i=src, j=tgt)
+                w = A[src, tgt].astype(np.float64)
+                self._S.w = w
+                delays = (float(self.base_delay_ms) + float(self.rand_delay_ms) * np.random.rand(len(w))) * b2.ms
+                self._S.delay = delays
+
+            # Readout PSC layer + monitor
+            self._R = b2.NeuronGroup(N, f'dI/dt = -I/({float(self.tau_read_ms)}*ms) : 1', method='exact')
+            self._S_read = b2.Synapses(self._G, self._R, on_pre='I_post += 1.0')
+            self._S_read.connect(j='i')
+            self._readmon = b2.StateMonitor(self._R, 'I', record=True)
+
+            self._net = b2.Network(self._G, self._S, self._R, self._S_read, self._readmon)
+
+            # Store clean initial state so we can restore quickly later
+            self._net.store('init')
+
+            self._built_sig = new_sig
+
+        else:
+            # In Brian2, restore resets state variables, but StateMonitor may keep old recordings.
+            self._net.restore('init')
+ 
+
+
+    def train(self, input: np.ndarray, target: np.ndarray):
+        """
+        Trains a MIMO spiking reservoir readout using Bayesian Ridge Regression.
+
+        Expected shapes:
+        input  : (input_units, T)
+        target : (output_units, T)
+
+        Returns:
+        predictions : (output_units, T - washout)
+        """
+        import brian2 as b2
+        # --- shape sanity ---
+        if input.ndim != 2 or target.ndim != 2:
+            raise ValueError("Input and target must be 2D arrays: (units, time).")
+
+        in_units, T_in = input.shape
+        out_units, T_tgt = target.shape
+        if T_in != T_tgt:
+            raise ValueError("Input and target sequences must have the same length.")
+        if in_units != self.input_units:
+            raise ValueError(f"Expected input_units={self.input_units}, got {in_units}.")
+        if out_units != self.output_units:
+            raise ValueError(f"Expected output_units={self.output_units}, got {out_units}.")
+
+        T = T_in
+
+        # --- (re)build brian2 objects if needed for this T ---
+        # We assume reset(state_dim) builds the network + a StateMonitor over R.I
+        # and stores it in self._readmon, plus creates a Network in self._net.
+        if (getattr(self, "_state_dim", None) != T) or (not hasattr(self, "_net")):
+            self.reset(state_dim=T)
+
+        # --- drive input (your scheme) ---
+        # Convert input to 1D drive signal u[t]. If multiple input units exist, sum them.
+        u = np.sum(input, axis=0).astype(np.float64)  # shape (T,)
+        mu = float(np.mean(u))
+        drive = self.gain * (u - mu)  # center + gain
+
+        # Update TimedArray used inside brian2 equations: I_ext = I_ta(t)
+        # reset() should have created self._I_ta with correct dt and length.
+        self._I_ta = b2.TimedArray(drive.astype(np.float64), dt=self._dt)
+        self._G.namespace["I_ta"] = self._I_ta  # brian2 TimedArray expects (T, ...)
+
+        # --- run sim ---
+        self._net.restore('init')
+        self._net.run(T * self._dt)
+
+        # --- build state matrix X from readout current ---
+        # readmon.I: (N, T)
+        X = np.asarray(self._readmon.I)  # shape (N, T)
+        if X.shape[1] != T:
+            X = X[:, :T]
+        self.reservoir_state[:, :T] = X
+
+        # --- washout handling ---
+        w = int(self.washout)
+        if w >= T:
+            return None  # matches repo behavior (TaskFitness handles None -> NaN)
+
+        # Design matrix: (T-w, N) and add bias -> (T-w, N+1)
+        Xw = X[:, w:].T  # (T-w, N)
+        Xw = np.concatenate([Xw, np.ones((Xw.shape[0], 1))], axis=1)  # bias column
+
+        # Target post-washout: (T-w, out_units)
+        Yw = target[:, w:].T  # (T-w, out_units)
+
+        # --- fit BR per output dim (same style as ESN code) ---
+        w_out = np.zeros((out_units, Xw.shape[1]), dtype=np.float64)  # out_units x (N+1)
+
+        for i in range(out_units):
+            y_i = Yw[:, i]
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=RuntimeWarning)
+                    model = BayesianRidge(max_iter=3000, tol=1e-6, fit_intercept=False)
+                    model.fit(Xw, y_i)
+                    w_out[i, :] = model.coef_
+            except Exception:
+                w_out[i, :] = 0.0
+
+        # Store readout weights (excluding bias, mirroring ESN code behavior)
+        self.w_out = w_out[:, :-1]      # out_units x N
+        self._w_out_bias = w_out[:, -1] # out_units,
+
+        # Predictions post-washout: (out_units, T-w)
+        preds = (w_out @ Xw.T)  # out_units x (T-w)
+        preds = np.nan_to_num(preds, nan=0.0)
+
+        return preds
     
+    def run(self, input: np.ndarray):
+        """
+        Runs the spiking reservoir forward using the already-trained readout.
+
+        Expected shape:
+        input : (input_units, T)
+
+        Returns:
+        predictions : (output_units, T - washout)
+        """
+        import brian2 as b2
+
+        if input.ndim != 2:
+            raise ValueError("Input must be a 2D array: (input_units, time).")
+
+        in_units, T = input.shape
+        if in_units != self.input_units:
+            raise ValueError(f"Expected input_units={self.input_units}, got {in_units}.")
+
+        # If network not built for this T, rebuild
+        if (getattr(self, "_state_dim", None) != T) or (self._net is None):
+            self.reset(state_dim=T)
+
+        # Start from clean initial state each run (important!)
+        if hasattr(self._net, "restore"):
+            try:
+                self._net.restore('init')
+            except Exception:
+                # If store wasn't created for some reason, you can fall back to rebuild:
+                self.reset(state_dim=T)
+
+        # Drive input the same way as in train()
+        u = np.sum(input, axis=0).astype(np.float64)  # (T,)
+        mu = float(np.mean(u))
+        drive = self.gain * (u - mu)
+
+        self._I_ta = b2.TimedArray(drive.reshape(-1, 1), dt=self._dt)
+        self._G.namespace["I_ta"] = self._I_ta
+
+        # Simulate
+        self._net.restore('init')
+        self._net.run(T * self._dt)
+
+        # Read state matrix from monitor
+        X = np.asarray(self._readmon.I)  # (N, T)
+        if X.shape[1] != T:
+            X = X[:, :T]
+
+        w = int(self.washout)
+        if w >= T:
+            return None
+
+        Xw = X[:, w:]  # (N, T-w)
+
+        # Apply learned readout: w_out is (out_units, N)
+        preds = self.w_out @ Xw  # (out_units, T-w)
+
+        # Add bias if present
+        if hasattr(self, "_w_out_bias"):
+            preds = preds + self._w_out_bias[:, None]
+
+        preds = np.nan_to_num(preds, nan=0.0)
+        return preds
+    
+    @classmethod
+    def from_reservoir(cls, res: Reservoir) -> "SpikingReservoir":
+        return cls(res.A, res.S, input_nodes=res.input_nodes, output_nodes=res.output_nodes,
+                input_units=res.input_units, output_units=res.output_units, washout=res.washout)
