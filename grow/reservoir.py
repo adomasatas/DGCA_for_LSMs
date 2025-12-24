@@ -5,7 +5,7 @@ from grow.graph import GraphDef
 from scipy.sparse.csgraph import connected_components
 from sklearn.linear_model import BayesianRidge
 import matplotlib.pyplot as plt
-
+import brian2 as b2
 
 POLARITY_MATRIX = np.array([
     [1, 1, -1],  # state_from 0
@@ -448,8 +448,7 @@ class SpikingReservoir(Reservoir):
         self._I_ta = None
         self._input_mask_idx = None
 
-    def reset(self, state_dim: int = 2000):
-        import brian2 as b2
+    def reset(self, state_dim: int = 2000, build: bool = False):
 
         N = self.size()
         state_dim = int(state_dim)
@@ -469,7 +468,9 @@ class SpikingReservoir(Reservoir):
             self._input_mask_idx = np.array([], dtype=int)
             self._built_sig = None
             return
-
+        if not build:
+            return
+        
         # --- decide whether we must rebuild ---
         # Signature should change if anything structural changes.
         # Hash A cheaply by its bytes (OK for your sizes; can optimize later).
@@ -480,6 +481,19 @@ class SpikingReservoir(Reservoir):
         new_sig = (N, A_sig, state_dim, dt)
 
         needs_build = (getattr(self, "_net", None) is None) or (getattr(self, "_built_sig", None) != new_sig)
+
+        
+        # if not hasattr(SpikingReservoir, "_build_debug"):
+        #     SpikingReservoir._build_debug = 0
+
+        # if SpikingReservoir._build_debug < 50:
+        #     print(
+        #         f"[LSM reset] id={id(self)} "
+        #         f"has_net_before={self._net is not None} "
+        #         f"sig_match={getattr(self,'_built_sig',None)==new_sig} "
+        #         f"needs_build={needs_build}"
+        #     )
+        #     SpikingReservoir._build_debug += 1
 
         if needs_build:
             # Reproducibility (optional)
@@ -531,6 +545,8 @@ class SpikingReservoir(Reservoir):
                 self._S.w = w
                 delays = (float(self.base_delay_ms) + float(self.rand_delay_ms) * np.random.rand(len(w))) * b2.ms
                 self._S.delay = delays
+            else:
+                self._S.active = False
 
             # Readout PSC layer + monitor
             self._R = b2.NeuronGroup(N, f'dI/dt = -I/({float(self.tau_read_ms)}*ms) : 1', method='exact')
@@ -562,7 +578,6 @@ class SpikingReservoir(Reservoir):
         Returns:
         predictions : (output_units, T - washout)
         """
-        import brian2 as b2
         # --- shape sanity ---
         if input.ndim != 2 or target.ndim != 2:
             raise ValueError("Input and target must be 2D arrays: (units, time).")
@@ -582,9 +597,9 @@ class SpikingReservoir(Reservoir):
         # We assume reset(state_dim) builds the network + a StateMonitor over R.I
         # and stores it in self._readmon, plus creates a Network in self._net.
         if (getattr(self, "_state_dim", None) != T) or (not hasattr(self, "_net")):
-            self.reset(state_dim=T)
+            self.reset(state_dim=T, build=True)
 
-        # --- drive input (your scheme) ---
+        # --- drive input ---
         # Convert input to 1D drive signal u[t]. If multiple input units exist, sum them.
         u = np.sum(input, axis=0).astype(np.float64)  # shape (T,)
         mu = float(np.mean(u))
@@ -601,10 +616,29 @@ class SpikingReservoir(Reservoir):
 
         # --- build state matrix X from readout current ---
         # readmon.I: (N, T)
-        X = np.asarray(self._readmon.I)  # shape (N, T)
+        X = np.asarray(self._readmon.I)#########  # shape (N, T)
         if X.shape[1] != T:
             X = X[:, :T]
-        self.reservoir_state[:, :T] = X
+        self.reservoir_state[:, :T] = X 
+
+
+        # print(np.round(X[0][:100], 2),"\n\n") ##########
+
+
+        #######
+        # if not hasattr(self, "_debug_calls"): self._debug_calls = 0
+        # if self._debug_calls < 10:
+        #     print(
+        #         f"[LSM train] N={self.size()} T={T} "
+        #         f"drive_std={np.std(drive):.3g} "
+        #         f"X_std={np.std(X):.3g} X_minmax=({np.min(X):.3g},{np.max(X):.3g}) "
+        #         f"spikes_total={int(np.sum(self._G.spike_count)) if hasattr(self._G, 'spike_count') else 'n/a'}"
+        #         f"[LSM train] id={id(self)} "
+        #         f"has_net={self._net is not None} "
+        #         f"needs_build={self._net is None}"
+        #     )
+        #     self._debug_calls += 1
+        #######
 
         # --- washout handling ---
         w = int(self.washout)
@@ -652,7 +686,7 @@ class SpikingReservoir(Reservoir):
         Returns:
         predictions : (output_units, T - washout)
         """
-        import brian2 as b2
+        
 
         if input.ndim != 2:
             raise ValueError("Input must be a 2D array: (input_units, time).")
@@ -663,18 +697,18 @@ class SpikingReservoir(Reservoir):
 
         # If network not built for this T, rebuild
         if (getattr(self, "_state_dim", None) != T) or (self._net is None):
-            self.reset(state_dim=T)
+            self.reset(state_dim=T, build=True)
 
-        # Start from clean initial state each run (important!)
+        # Start from clean initial state each run 
         if hasattr(self._net, "restore"):
             try:
                 self._net.restore('init')
             except Exception:
-                # If store wasn't created for some reason, you can fall back to rebuild:
-                self.reset(state_dim=T)
+                # If store wasn't created for some reason, fall back to rebuild:
+                self.reset(state_dim=T, build=True)
 
-        # Drive input the same way as in train()
-        u = np.sum(input, axis=0).astype(np.float64)  # (T,)
+        # Drive input
+        u = np.sum(input, axis=0).astype(np.float64) 
         mu = float(np.mean(u))
         drive = self.gain * (u - mu)
 

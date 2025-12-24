@@ -303,13 +303,19 @@ class ChromosomalMGA:
         """
         Main evolution loop.
         """
+
         pbar = tqdm(range(self.n_trials), postfix={'fit':0, 'best':0}) if progress else range(self.n_trials)
         for _ in pbar:
             f = self.contest()
             self.trial += 1
             if progress:
                 pbar.set_postfix({'fit': f, 'best': self.best["fitness"]})
+
+            print(f"Trial: {self.trial}\r", end="")########
+
         self.log_model(self.best['model'], self.best['reservoir'], trial=-1)
+
+        
 
     def contest(self) -> float:
         """

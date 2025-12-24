@@ -1,14 +1,15 @@
 import sqlite3, jsonpickle
 from evolve.mga import EvolvableDGCA
 from grow.reservoir import Reservoir
+from helloDGCA import draw_reservoir
 
-# open your database
-conn = sqlite3.connect("fitness_local.db")
+
+conn = sqlite3.connect("fitness_local_2.db")
 
 # fetch the final (best) model — epoch = -1 is used for "final best"
 row = conn.execute(
     "SELECT model, reservoir FROM models WHERE run_id=? AND epoch=-1",
-    (114,)
+    (5,)
 ).fetchone()
 
 conn.close()
@@ -20,8 +21,8 @@ best_reservoir = jsonpickle.decode(row[1])  # Reservoir instance
 print("Best reservoir size:", best_reservoir.size())
 print("Edges:", int(best_reservoir.A.sum()))
 
-# visualize with your draw helper if you want
-from helloDGCA import draw_reservoir
+
+
 
 draw_reservoir(best_reservoir)
 

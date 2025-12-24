@@ -8,6 +8,7 @@ args_dict = {
     "cross_rate": 0.5,
     "cross_style": "cols",
     "n_trials": 1000,        
+    "reservoir_type": "esn",   # or "lsm" later
     "input_nodes": 0,
     "output_nodes": 0,
     "order": 10,
