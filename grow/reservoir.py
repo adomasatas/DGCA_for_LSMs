@@ -23,6 +23,8 @@ def tanh(x):
 ACTIVATION_TABLE = np.array([tanh, tanh, linear])
 
 
+EXC_INH_TABLE = np.array([+1.0, +1.0, -1.5]) # excitatory/inhibitory nature of each state for spiking reservoirs
+
 def check_conditions(res: 'Reservoir',
                      conditions: dict, 
                      verbose: bool=False) -> bool:
@@ -431,7 +433,8 @@ class SpikingReservoir(Reservoir):
         self.threshold = 0.5
         self.refractory_ms = 2.0
         self.p_input = 0.6
-        self.gain = 32.0
+        self.gain = 32.0 
+
 
         self.base_delay_ms = 4.0
         self.rand_delay_ms = 2.0
@@ -454,13 +457,13 @@ class SpikingReservoir(Reservoir):
         state_dim = int(state_dim)
         self._state_dim = state_dim
 
-        # Keep pipeline-compatible buffers
+        # keep pipeline-compatible buffers
         self.reservoir_state = np.zeros((N, state_dim), dtype=np.float64)
         self.w_out = np.zeros((self.output_units,
                                 self.output_nodes if self.output_nodes else N),
                             dtype=np.float64)
 
-        # Nothing to build if empty
+        # nothing to build if empty
         if N == 0:
             self._net = None
             self._G = self._S = self._R = self._S_read = self._readmon = None
@@ -471,9 +474,8 @@ class SpikingReservoir(Reservoir):
         if not build:
             return
         
-        # --- decide whether we must rebuild ---
-        # Signature should change if anything structural changes.
-        # Hash A cheaply by its bytes (OK for your sizes; can optimize later).
+        # decide if we must rebuild 
+        # signature should change if anything structural changes
         A = np.asarray(self.A)
         A_sig = hash(A.tobytes())
 
@@ -553,8 +555,11 @@ class SpikingReservoir(Reservoir):
             self._S_read = b2.Synapses(self._G, self._R, on_pre='I_post += 1.0')
             self._S_read.connect(j='i')
             self._readmon = b2.StateMonitor(self._R, 'I', record=True)
+            self._spikemon = b2.SpikeMonitor(self._G) ############### debug
 
-            self._net = b2.Network(self._G, self._S, self._R, self._S_read, self._readmon)
+            self._net = b2.Network(self._G, self._S, self._R, self._S_read, self._readmon, self._spikemon)
+
+
 
             # Store clean initial state so we can restore quickly later
             self._net.store('init')
@@ -623,7 +628,6 @@ class SpikingReservoir(Reservoir):
 
 
         # print(np.round(X[0][:100], 2),"\n\n") ##########
-
 
         #######
         # if not hasattr(self, "_debug_calls"): self._debug_calls = 0
@@ -719,7 +723,6 @@ class SpikingReservoir(Reservoir):
         self._net.restore('init')
         self._net.run(T * self._dt)
 
-        # Read state matrix from monitor
         X = np.asarray(self._readmon.I)  # (N, T)
         if X.shape[1] != T:
             X = X[:, :T]
@@ -739,6 +742,26 @@ class SpikingReservoir(Reservoir):
 
         preds = np.nan_to_num(preds, nan=0.0)
         return preds
+    
+    def bipolar(self) -> 'Reservoir':
+        """
+        Return a copy of the graph with weights based on excitatory/inhibitory nature.
+        """
+        node_states = np.array(self.states_1d())
+        # row and column indices of edges
+        rows, cols = np.nonzero(self.A)
+
+        
+        if len(rows) == 0:
+            return self.__class__(self.A, self.S, self.input_nodes, self.output_nodes)
+
+        sign_out = EXC_INH_TABLE[node_states]   # shape (N,)
+
+        jitter = np.random.uniform(0.5, 1.5, size=len(rows))
+        
+        A_new = np.zeros_like(self.A , dtype=np.float64)
+        A_new[rows, cols] = sign_out[rows] * jitter # source node determines weight sign
+        return self.__class__(A_new, self.S, self.input_nodes, self.output_nodes)
     
     @classmethod
     def from_reservoir(cls, res: Reservoir) -> "SpikingReservoir":
