@@ -527,17 +527,15 @@ class SpikingReservoir(Reservoir):
                 namespace={'I_ta': self._I_ta}
             )
 
-            # Input mask
-            k = int(np.round(float(self.p_input) * N))
-            k = max(0, min(N, k))
-            inp_idx = np.random.choice(N, k, replace=False) if k > 0 else np.array([], dtype=int)
-            signs = np.random.choice([-1.0, 1.0], size=len(inp_idx)) if len(inp_idx) else np.array([], dtype=float)
-            self._G.m = 0.0
-            if len(inp_idx):
-                self._G.m[inp_idx] = signs
-            self._input_mask_idx = inp_idx
+            # weights random {-1, 0, 1} for each neuron
+            self.w_in = np.random.randint(-1, 2, (self.input_units, N))
+            # mask input nodes if present
+            if self.input_nodes:
+                self.w_in[:, self.input_nodes:] = 0
+            # Set per-neuron input multiplier from w_in
+            self._G.m = self.w_in[0, :] if self.input_units == 1 else np.sum(self.w_in, axis=0)
 
-            # Recurrent synapses from A (including self-loops if present)
+            # Recurrent synapses from A 
             src, tgt = np.nonzero(A)
 
             self._S = b2.Synapses(self._G, self._G, 'w : 1', on_pre='I_post += w')
@@ -605,8 +603,11 @@ class SpikingReservoir(Reservoir):
             self.reset(state_dim=T, build=True)
 
         # --- drive input ---
-        # Convert input to 1D drive signal u[t]. If multiple input units exist, sum them.
-        u = np.sum(input, axis=0).astype(np.float64)  # shape (T,)
+        # Weight input per neuron using w_in 
+        # For single input: w_in shape (1, N), input shape (1, T)
+        weighted_input = (self.w_in.T @ input).astype(np.float64)  # (N, T)
+        # Sum across neurons for global drive signal
+        u = np.sum(weighted_input, axis=0)  # (T,)
         mu = float(np.mean(u))
         drive = self.gain * (u - mu)  # center + gain
 
@@ -711,8 +712,9 @@ class SpikingReservoir(Reservoir):
                 # If store wasn't created for some reason, fall back to rebuild:
                 self.reset(state_dim=T, build=True)
 
-        # Drive input
-        u = np.sum(input, axis=0).astype(np.float64) 
+        # Drive input using w_in 
+        weighted_input = (self.w_in.T @ input).astype(np.float64)  # (N, T)
+        u = np.sum(weighted_input, axis=0)  # (T,)
         mu = float(np.mean(u))
         drive = self.gain * (u - mu)
 
@@ -745,22 +747,21 @@ class SpikingReservoir(Reservoir):
     
     def bipolar(self) -> 'Reservoir':
         """
-        Return a copy of the graph with weights based on excitatory/inhibitory nature.
+        Return a copy of the graph with weights converted to bipolar (-1,1) from one-hot encoding.
         """
         node_states = np.array(self.states_1d())
         # row and column indices of edges
         rows, cols = np.nonzero(self.A)
-
-        
-        if len(rows) == 0:
+        # map the states of the source and target nodes 
+        states_from = node_states[rows]
+        states_to = node_states[cols]
+        if len(states_to) == 0 or len(states_from) == 0:
             return self.__class__(self.A, self.S, self.input_nodes, self.output_nodes)
+        # vectorize to weights using POLARITY_MATRIX
+        new_weights = POLARITY_MATRIX[states_from, states_to]
 
-        sign_out = EXC_INH_TABLE[node_states]   # shape (N,)
-
-        jitter = np.random.uniform(0.5, 1.5, size=len(rows))
-        
-        A_new = np.zeros_like(self.A , dtype=np.float64)
-        A_new[rows, cols] = sign_out[rows] * jitter # source node determines weight sign
+        A_new = np.zeros_like(self.A, dtype=np.float64)
+        A_new[rows, cols] = new_weights  
         return self.__class__(A_new, self.S, self.input_nodes, self.output_nodes)
     
     @classmethod
