@@ -4,12 +4,12 @@ from grow.reservoir import Reservoir
 from helloDGCA import draw_reservoir
 
 
-conn = sqlite3.connect("fitness_local_2.db")
+conn = sqlite3.connect("fitness_local_4.db")
 
 # fetch the final (best) model — epoch = -1 is used for "final best"
 row = conn.execute(
     "SELECT model, reservoir FROM models WHERE run_id=? AND epoch=-1",
-    (5,)
+    (2,)
 ).fetchone()
 
 conn.close()
