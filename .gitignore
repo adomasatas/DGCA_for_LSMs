@@ -2,3 +2,22 @@
 data/
 .DS_Store
 analysis/
+
+# Databases
+*.db
+
+# Logs
+logs/
+*.stdout
+
+# Generated output
+output/
+*.png
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.env/
