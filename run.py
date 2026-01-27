@@ -36,7 +36,7 @@ def run_ga(run_id, args):
         reservoir = SpikingReservoir.from_reservoir(reservoir)
 
     model = EvolvableDGCA(n_states=reservoir.n_states, hidden_size=64)
-    runner = Runner(max_steps=100, max_size=300)
+    runner = Runner(max_steps=100, max_size=args.max_size)
 
     mga = ChromosomalMGA(popsize=args.pop_size,
                         seed_graph=reservoir,
