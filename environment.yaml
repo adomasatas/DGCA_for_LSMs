@@ -11,6 +11,7 @@ dependencies:
   - scikit-learn
   - jsonpickle  
   - plotnine
+  - brian2
   - pip:
     - wrapt_timeout_decorator
     - multiset
