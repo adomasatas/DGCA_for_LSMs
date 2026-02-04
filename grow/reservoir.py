@@ -7,6 +7,7 @@ from sklearn.linear_model import BayesianRidge
 import matplotlib.pyplot as plt
 import brian2 as b2
 
+
 POLARITY_MATRIX = np.array([
     [1, 1, -1],  # state_from 0
     [-1, 1, 1],  # state_from 1
@@ -762,6 +763,16 @@ class SpikingReservoir(Reservoir):
 
         A_new = np.zeros_like(self.A, dtype=np.float64)
         A_new[rows, cols] = new_weights  
+        
+        #####
+        # scale to SR of 1.5
+        temp_res = self.__class__(A_new, self.S, self.input_nodes, self.output_nodes)
+        from measure.metrics import spectral_radius
+        sr = spectral_radius(temp_res)
+        if sr > 0:
+            A_new *= 1.5 / sr
+        ###
+
         return self.__class__(A_new, self.S, self.input_nodes, self.output_nodes)
     
     @classmethod
